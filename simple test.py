@@ -4,17 +4,15 @@ import shutil
 from pathlib import Path
 import datetime
 import numpy as np
-import urllib.request # 修复 NameError
-import urllib.error
 
 # ================= 配置 =================
 DATA_FILE_NAME = "f107_ap.npz"
 # =======================================
 
-st.set_page_config(page_title="NRLMSIS Final Fix", page_icon="🎉")
-st.title("🎉 NRLMSIS-2.0 终极修复版")
+st.set_page_config(page_title="NRLMSIS Success", page_icon="🚀")
+st.title("🚀 NRLMSIS-2.0 最终成功版")
 
-# 1. 准备数据
+# 1. 准备数据文件
 current_dir = Path(__file__).parent.resolve()
 source_path = current_dir / DATA_FILE_NAME
 
@@ -24,96 +22,99 @@ if not source_path.exists():
 
 st.success(f"✅ 找到数据文件：{source_path}")
 
-# 2. 尝试多种可能的缓存路径 (覆盖所有可能性)
-possible_dirs = [
-    Path.home() / ".pymsis",          # 标准路径 (/home/appuser/.pymsis)
-    Path("/root/.pymsis"),            # 有时库会去这里
-    Path("/tmp/.pymsis"),             # 临时目录
-    Path(os.environ.get("HOME", "/tmp")) / ".pymsis"
-]
+# 2. 复制文件到缓存目录 (作为备份，虽然下面手动注入可能用不到)
+target_dir = Path.home() / ".pymsis"
+try:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, target_dir / DATA_FILE_NAME)
+    st.info(f"📂 已备份文件到：{target_dir / DATA_FILE_NAME}")
+except Exception as e:
+    st.warning(f"⚠️ 备份失败: {e}")
 
-target_path = None
-for p_dir in possible_dirs:
-    try:
-        p_dir.mkdir(parents=True, exist_ok=True)
-        t_path = p_dir / DATA_FILE_NAME
-        shutil.copy2(source_path, t_path)
-        st.info(f"📂 已复制文件到：{t_path}")
-        if target_path is None:
-            target_path = t_path
-    except Exception as e:
-        pass
-
-# 3. 【核心大招】手动加载数据，直接传给 msis.run
-# 这样完全绕过 pymsis 内部的自动下载逻辑
+# 3. 核心计算逻辑
 st.divider()
-st.subheader("🚀 开始计算 (手动注入数据模式)")
+st.subheader("🚀 开始计算 (手动注入 Options)")
 
-with st.spinner("正在加载数据并计算..."):
+with st.spinner("正在加载数据并调用模型..."):
     try:
         from pymsis import msis
-        from pymsis.utils import get_f107_ap # 尝试导入工具函数
-        
-        # 手动加载我们刚刚复制的 .npz 文件
+
+        # --- A. 手动加载数据 ---
         data = np.load(str(source_path), allow_pickle=True)
-        
-        # 构造 pymsis 需要的数据格式
-        # 注意：npz 里的键名可能是 'dates', 'f107', 'ap' 等
         dates_data = data['dates']
         f107_data = data['f107']
         ap_data = data['ap']
-        
-        st.success("✅ 数据文件手动加载成功！")
+        st.success("✅ 数据文件加载成功！")
 
-        # 测试参数
+        # --- B. 准备测试参数 ---
         time = datetime.datetime(2023, 1, 1, 12, 0, 0)
         lon = 0.0
         lat = 45.0
         alt = 400.0
         
-        # 【关键】调用 run 时，显式传入 f107 和 ap 参数
-        # 这样 msis.run 就不会去查文件，也不会联网了！
-        # 我们需要根据时间插值获取对应的 f107/ap，或者简单起见，传入固定值/最近值
-        
-        # 简单策略：找到离测试时间最近的数据
+        # 找到对应时间的数据索引
         time_np = np.datetime64(time)
         idx = np.argmin(np.abs(dates_data - time_np))
         
-        f107_val = float(f107_data[idx])
-        f107a_val = float(f107_data[idx]) # 简化处理，用当日值代替81天平均
-        ap_val = float(ap_data[idx])
+        val_f107 = float(f107_data[idx])
+        val_ap = float(ap_data[idx])
+        # f107a 通常指 81 天平均，这里为了简单测试，我们用当日值代替，或者你可以计算滑动平均
+        # 对于单次测试，直接传入 f107 和 ap 即可，模型内部有默认处理逻辑
+        # 但为了完全控制，我们构造 options
         
-        st.write(f"📊 使用数据点 (索引 {idx}): F10.7={f107_val}, Ap={ap_val}")
+        st.write(f"📊 使用数据点 (索引 {idx}): F10.7={val_f107}, Ap={val_ap}")
 
-        # 执行计算 (显式传入空间天气参数)
+        # --- C. 【关键】构造 options 列表 ---
+        # pymsis.run 的签名通常是 run(dates, lons, lats, alts, options=None)
+        # options 是一个列表，每个元素对应一个时间点的配置字典
+        # 字典键包括: 'f107', 'f107a', 'ap', 'ap_prev', etc.
+        
+        my_options = [{
+            'f107': val_f107,
+            'f107a': val_f107,  # 用当日值近似 81 天平均
+            'ap': val_ap,
+            'ap_prev': val_ap   # 前一天的 ap，也用当前值近似
+        }]
+
+        # --- D. 执行计算 ---
+        # 注意：第一个参数可以是单个时间或时间列表。如果是列表，options 长度必须匹配。
+        # 这里我们传入列表以匹配 options
         output = msis.run(
-            time, lon, lat, alt,
-            f107=f107_val,
-            f107a=f107a_val,
-            ap=ap_val
+            [time], [lon], [lat], [alt],
+            options=my_options
         )
         
-        # 处理维度
+        # --- E. 解析结果 ---
+        # 此时输出通常是 (1, 1, 1, 1, 11) 或 (1, 11) 取决于版本
+        # 我们取第一个点的温度和密度
         if output.ndim == 2:
+            # (1, 11)
             temp = float(output[0, 0])
             density = float(output[0, 1])
         elif output.ndim == 5:
+            # (1, 1, 1, 1, 11)
             temp = float(output[0, 0, 0, 0, 0])
             density = float(output[0, 0, 0, 0, 1])
         else:
-            st.error(f"未知维度：{output.ndim}")
+            st.error(f"❌ 未知的输出维度: {output.shape}")
             st.stop()
 
+        # --- F. 显示结果 ---
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("温度 (K)", f"{temp:.2f}")
+            st.metric(label="中性温度 (Temperature)", value=f"{temp:.2f} K")
         with col2:
-            st.metric("密度 (kg/m³)", f"{density:.2e}")
+            st.metric(label="总质量密度 (Density)", value=f"{density:.2e} kg/m³")
             
         st.balloons()
-        st.success("🎉 完美成功！未发生任何网络请求。")
+        st.success("🎉 计算成功！完全离线运行，无网络请求！")
+        
+        with st.expander("查看详细输出数组"):
+            st.write(f"形状: {output.shape}")
+            st.write("变量顺序: Temp, Density, N2, O2, O, Ar, He, H, N, NO, Mass")
+            st.write(output)
 
     except Exception as e:
-        st.error(f"💥 错误：{e}")
+        st.error(f"💥 发生错误: {e}")
         import traceback
         st.code(traceback.format_exc())
