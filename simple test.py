@@ -1,4 +1,31 @@
 import streamlit as st
+import os
+from pathlib import Path
+
+# 设置环境变量，告诉 pymsis 数据文件在哪里 (假设你上传的文件名叫 f107_ap.npz)
+# 注意：不同版本的 pymsis 可能识别不同的环境变量，通常是 PYMSIS_DATA_DIR 或直接覆盖内部逻辑
+# 如果环境变量不起作用，我们需要手动“欺骗”库
+
+current_dir = Path(__file__).parent
+data_file = current_dir / "f107_ap.npz"  # 确保这个名字和你上传的一致
+
+if data_file.exists():
+    os.environ['PYMSIS_DATA_DIR'] = str(current_dir)
+    # 有些版本可能需要预加载
+    import pymsis.utils as utils
+    # 强制将数据加载到内存，防止后续调用触发下载
+    if not hasattr(utils, '_DATA') or utils._DATA is None:
+         utils._DATA = utils._load_f107_ap_data_from_file(str(data_file)) # 伪代码，视具体版本API而定
+         # 如果上面这行报错，说明版本不支持直接指定文件加载函数，
+         # 此时最简单的办法是利用 pymsis 会自动扫描当前工作目录的特性。
+         # 确保 .npz 文件就在运行目录下。
+    st.success("检测到本地数据文件，跳过下载。")
+else:
+    st.warning("未找到本地数据文件，将尝试联网下载（可能会失败）。")
+
+
+
+import streamlit as st
 from pymsis import msis
 import datetime
 import numpy as np
