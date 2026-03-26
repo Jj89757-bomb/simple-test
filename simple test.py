@@ -1,71 +1,100 @@
 import streamlit as st
 import os
+import shutil
 from pathlib import Path
-
-# 设置环境变量，告诉 pymsis 数据文件在哪里 (假设你上传的文件名叫 f107_ap.npz)
-# 注意：不同版本的 pymsis 可能识别不同的环境变量，通常是 PYMSIS_DATA_DIR 或直接覆盖内部逻辑
-# 如果环境变量不起作用，我们需要手动“欺骗”库
-
-current_dir = Path(__file__).parent
-data_file = current_dir / "f107_ap.npz"  # 确保这个名字和你上传的一致
-
-if data_file.exists():
-    os.environ['PYMSIS_DATA_DIR'] = str(current_dir)
-    # 有些版本可能需要预加载
-    import pymsis.utils as utils
-    # 强制将数据加载到内存，防止后续调用触发下载
-    if not hasattr(utils, '_DATA') or utils._DATA is None:
-         utils._DATA = utils._load_f107_ap_data_from_file(str(data_file)) # 伪代码，视具体版本API而定
-         # 如果上面这行报错，说明版本不支持直接指定文件加载函数，
-         # 此时最简单的办法是利用 pymsis 会自动扫描当前工作目录的特性。
-         # 确保 .npz 文件就在运行目录下。
-    st.success("检测到本地数据文件，跳过下载。")
-else:
-    st.warning("未找到本地数据文件，将尝试联网下载（可能会失败）。")
-
-
-
-import streamlit as st
-from pymsis import msis
 import datetime
 import numpy as np
 
-st.title("Test succeed!")
+# ================= 配置 =================
+DATA_FILE_NAME = "f107_ap.npz"
+# =======================================
 
-# 1. 设置输入参数
-time = datetime.datetime(2023, 1, 1, 12)
-lon = 0
-lat = 45
-alt = 400
+st.set_page_config(page_title="NRLMSIS Simple Test", page_icon="🌍")
+st.title("🌍 NRLMSIS-2.0 简单测试 (修复版)")
+st.markdown("此应用演示如何在 Streamlit Cloud 上离线运行 `pymsis`。")
 
-# 2. 运行模型
-# data 的形状通常是 (ntime, nlat, nlon, nalt, nvars)
-# 对于单点输入，shape 可能是 (1, 1, 1, 1, 11) 或类似，取决于版本
-data = msis.run(time, lon, lat, alt)
+# 1. 准备数据文件 (核心步骤：复制文件到缓存目录)
+current_dir = Path(__file__).parent
+source_path = current_dir / DATA_FILE_NAME
+target_dir = Path.home() / ".pymsis"
+target_path = target_dir / DATA_FILE_NAME
 
-# 调试：打印形状和数据，方便你在控制台查看结构
-print(f"Data shape: {data.shape}")
-print(f"Raw data: {data}")
-
-# 3. 提取标量数值
-# 方法 A: 使用 .item() 如果数组里只有一个元素
-# 方法 B: 使用索引 [0,0,0,0,0] 明确获取第一个值 (时间, 纬, 经, 高, 变量索引)
-# 假设我们要获取的是中性温度 (通常是第一个变量，索引0)
-try:
-    # 尝试直接展平取第一个值，这是最安全的做法，不管维度是多少
-    temp_value = float(data.flatten()[0])
-except Exception as e:
-    st.error(f"数据提取失败: {e}")
+if not source_path.exists():
+    st.error(f"❌ 错误：未在仓库中找到 `{DATA_FILE_NAME}`。\n请确保已将该文件上传到 GitHub，并与本脚本在同一目录。")
     st.stop()
 
-# 4. 显示指标
-st.metric(
-    label="中性温度 (Exospheric Temp)",
-    value=f"{temp_value:.2f} K",       # 格式化显示，保留两位小数
-    delta=None,                        # 如果没有对比数据，建议设为 None，或者计算一个差值
-    # delta=temp_value - 700,          # 示例：如果你想显示相对于 700K 的变化
-    delta_color="normal"
-)
+try:
+    target_dir.mkdir(exist_ok=True)
+    if not target_path.exists() or source_path.stat().st_mtime > target_path.stat().st_mtime:
+        shutil.copy(source_path, target_path)
+        st.success(f"✅ 数据文件已部署到系统缓存：{target_path}")
+    else:
+        st.info(f"ℹ️ 数据文件已存在且为最新。")
+except Exception as e:
+    st.warning(f"⚠️ 文件复制遇到小问题：{e}，将继续尝试运行...")
 
-# 如果你想显示其他成分（比如 O, N2, O2 的密度），它们通常在后面的索引
-# 例如：o_density = float(data.flatten()[1]) # 假设索引1是O
+# 2. 运行模型
+st.divider()
+st.subheader("🚀 开始计算")
+
+with st.spinner("正在调用 NRLMSIS-2.0 模型..."):
+    try:
+        from pymsis import msis
+
+        # 测试参数：2023年1月1日，经度0，纬度45，高度400km
+        time = datetime.datetime(2023, 1, 1, 12, 0, 0)
+        lon = 0.0
+        lat = 45.0
+        alt = 400.0
+
+        # 执行计算
+        output = msis.run(time, lon, lat, alt)
+
+        # --- 🔧 核心修复：自适应处理数组维度 ---
+        # pymsis 可能返回 2D (点数, 变量) 或 5D (时间, 经度, 纬度, 高度, 变量)
+        if output.ndim == 2:
+            # 2D 情况：直接取第一行 (第一个点) 的前两个变量 (温度, 密度)
+            # 形状: (1, 11) -> 取 [0, 0] 和 [0, 1]
+            temp = float(output[0, 0])
+            density = float(output[0, 1])
+            shape_info = f"2D Array: {output.shape} (点数, 变量)"
+        elif output.ndim == 5:
+            # 5D 情况：取 [0, 0, 0, 0, 0] 和 [0, 0, 0, 0, 1]
+            temp = float(output[0, 0, 0, 0, 0])
+            density = float(output[0, 0, 0, 0, 1])
+            shape_info = f"5D Array: {output.shape} (时间, 经度, 纬度, 高度, 变量)"
+        else:
+            st.error(f"❌ 未知的数据维度：{output.ndim}。无法解析结果。")
+            st.stop()
+        # -----------------------------------
+
+        # 显示结果
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric(
+                label="中性温度 (Temperature)",
+                value=f"{temp:.2f} K",
+                delta=None
+            )
+        with col2:
+            st.metric(
+                label="总质量密度 (Density)",
+                value=f"{density:.2e} kg/m³",
+                delta=None
+            )
+
+        st.success("🎉 计算成功！PyMSIS 已在当前环境正常运行。")
+
+        with st.expander("查看原始数据数组信息"):
+            st.write(f"**输出形状**: {shape_info}")
+            st.write(f"**变量列表**: ['Temp', 'Density', 'N2', 'O2', 'O', 'Ar', 'He', 'H', 'N', 'NO', 'Mass']")
+            st.write("前 5 行数据预览:")
+            st.write(output[:5] if output.ndim == 2 else output.flatten()[:10])
+
+    except ImportError as ie:
+        st.error(f"❌ 导入错误：{ie}\n请检查 `requirements.txt` 是否包含 `pymsis`。")
+    except Exception as e:
+        st.error(f"💥 运行时错误：{e}")
+        import traceback
+
+        st.code(traceback.format_exc())
