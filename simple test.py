@@ -10,10 +10,10 @@ import re
 DATA_FILE_NAME = "f107_ap.npz"
 # =======================================
 
-st.set_page_config(page_title="NRLMSIS Final Fix", page_icon="🏆")
-st.title("🏆 NRLMSIS-2.0 最终修正版")
+st.set_page_config(page_title="NRLMSIS Data Injection", page_icon="💉")
+st.title("💉 NRLMSIS-2.0 数据注入版")
 
-# 1. 准备数据文件
+# 1. 准备并加载数据文件
 current_dir = Path(__file__).parent.resolve()
 source_path = current_dir / DATA_FILE_NAME
 
@@ -21,71 +21,50 @@ if not source_path.exists():
     st.error(f"❌ 找不到 {DATA_FILE_NAME}")
     st.stop()
 
-st.success(f"✅ 找到数据文件：{source_path}")
-
-# 2. 加载数据到内存
 try:
-    _LOCAL_DATA = np.load(str(source_path), allow_pickle=True)
-    # 确保数据是 numpy 数组
-    _LOCAL_DATES = _LOCAL_DATA['dates']
-    _LOCAL_F107 = _LOCAL_DATA['f107']
-    _LOCAL_AP = _LOCAL_DATA['ap']
-    st.success("✅ 空间天气数据已加载到内存")
+    raw_data = np.load(str(source_path), allow_pickle=True)
+    # 转换为 pymsis 期望的字典格式
+    # 确保日期是 datetime64 类型
+    dates = raw_data['dates'].astype('datetime64')
+    f107 = raw_data['f107'].astype(float)
+    ap = raw_data['ap'].astype(float)
+    
+    INJECTED_DATA = {
+        "dates": dates,
+        "f107": f107,
+        "ap": ap
+    }
+    st.success(f"✅ 数据已加载并格式化：{len(dates)} 条记录")
 except Exception as e:
-    st.error(f"加载数据失败: {e}")
+    st.error(f"数据处理失败: {e}")
     st.stop()
 
-# 3. 【核心大招】Monkey Patch: 强制离线并修正返回值格式
-def _offline_get_f107_ap(dates):
-    """
-    完全离线的替代品。
-    返回格式必须符合 pymsis 最新版本的期望：一个包含 dates, f107, ap 的字典。
-    """
-    dates = np.asarray(dates, dtype=np.datetime64)
-    
-    # 找到每个请求日期在本地数据中的最近索引
-    # 避免广播错误，确保形状匹配
-    if dates.ndim == 0:
-        dates = np.array([dates])
-        
-    indices = np.argmin(np.abs(_LOCAL_DATES[:, None] - dates[None, :]), axis=0)
-    
-    retrieved_f107 = _LOCAL_F107[indices]
-    retrieved_ap = _LOCAL_AP[indices]
-    
-    # 【关键】返回字典格式，而不是元组！
-    return {
-        "dates": dates,          # 返回请求的日期
-        "f107": retrieved_f107,  # 返回对应的 F10.7
-        "ap": retrieved_ap       # 返回对应的 Ap
-    }
-
-# 执行替换
+# 2. 【核心大招】直接注入全局变量 _DATA
+# 必须在导入 pymsis.msis 之前或之后立即执行，确保 _DATA 不为 None
 import pymsis.utils
-import pymsis.msis
 
-# 1. 替换获取数据的函数
-pymsis.utils.get_f107_ap = _offline_get_f107_ap
+# 直接赋值！这样 pymsis 认为数据已经加载好了，绝不会尝试联网或下载
+pymsis.utils._DATA = INJECTED_DATA
 
-# 2. 替换加载函数，防止它尝试加载空数据或联网
-# 我们让它返回 None，这样 get_f107_ap 就会被强制调用
-pymsis.utils._load_f107_ap_data = lambda: None
-pymsis.utils._DATA = None # 清空全局缓存
-
-# 3. 替换下载函数，防止意外调用
+# 为了防止它尝试重新加载，我们也覆盖加载函数为空
+pymsis.utils._load_f107_ap_data = lambda: INJECTED_DATA
 pymsis.utils.download_f107_ap = lambda: None
 
-st.info("🛡️ 安全模式已激活：拦截网络请求并修正数据格式。")
+st.info("💉 数据注入成功！pymsis 将直接使用内存中的数据，禁止联网。")
 
-# 4. 运行计算
+# 3. 运行计算
 st.divider()
-st.subheader("🚀 开始智能计算")
+st.subheader("🚀 开始计算")
 
 time_val = datetime.datetime(2023, 1, 1, 12, 0, 0)
 lon_val = 0.0
 lat_val = 45.0
 alt_val = 400.0
 
+# 这里的数值其实不重要，因为 _DATA 已经被注入了，
+# 但如果 options 传对了，它会优先用 options。
+# 为了触发使用 _DATA 的逻辑，我们可以故意传 None 或者错误的 options？
+# 不，还是传正确的 options 格式，如果它能用最好，不能用它会 fallback 到 _DATA。
 base_option = {
     'f107': 150.0, 
     'f107a': 150.0, 
@@ -99,7 +78,6 @@ def run_msis_with_auto_retry(t, l, la, a, base_opt):
     current_options = [base_opt]
     
     try:
-        # 第一次尝试
         output = msis.run([t], [l], [la], [a], options=current_options)
         return output, 1
     except ValueError as e:
@@ -140,13 +118,13 @@ with st.spinner("正在计算大气参数..."):
             st.metric(label="总质量密度 (Density)", value=f"{density:.2e} kg/m³")
             
         st.balloons()
-        st.success("🏆 完美！NRLMSIS-2.0 已在 Streamlit Cloud 上完全离线运行！")
+        st.success("💉 完美！数据注入成功，无网络请求！")
         
         with st.expander("查看完整输出数据"):
             st.write(f"输出形状: {output.shape}")
             st.dataframe(output.reshape(-1, 11)[:5])
 
     except Exception as e:
-        st.error(f"💥 发生未预期的错误: {e}")
+        st.error(f"💥 发生错误: {e}")
         import traceback
         st.code(traceback.format_exc())
